@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Local-first educational enrolment reference. AWS deployment is optional and billable.
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    Timeout: 15
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        EVENT_BUS_NAME: !Ref Bus
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: pk, AttributeType: S }]
+      KeySchema: [{ AttributeName: pk, KeyType: HASH }]
+      StreamSpecification: { StreamViewType: NEW_IMAGE }
+      SSESpecification: { SSEEnabled: true }
+  Bus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "${AWS::StackName}-events"
+      Description: Educational enrolment events
+  FailureQueue:
+    Type: AWS::SQS::Queue
+    Properties: { SqsManagedSseEnabled: true, MessageRetentionPeriod: 1209600 }
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: demo
+      Auth: { DefaultAuthorizer: AWS_IAM }
+  EnrollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: lambda.api
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem, dynamodb:GetItem]
+              Resource: !GetAtt Table.Arn
+      Events:
+        Enroll:
+          Type: Api
+          Properties: { Path: /enrollments, Method: post, RestApiId: !Ref Api }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        {
+          EntryPoints: [src/lambda.ts],
+          Format: cjs,
+          OutExtension: [".js=.cjs"],
+          Target: es2022,
+          Minify: true,
+        }
+  PublishFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: lambda.stream
+      Policies:
+        - DynamoDBStreamReadPolicy: { TableName: !Ref Table, StreamName: "*" }
+        - Statement:
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt Bus.Arn
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt FailureQueue.Arn
+      Events:
+        Changes:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt Table.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 10
+            MaximumRetryAttempts: 5
+            BisectBatchOnFunctionError: true
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            DestinationConfig:
+              OnFailure: { Type: SQS, Destination: !GetAtt FailureQueue.Arn }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        {
+          EntryPoints: [src/lambda.ts],
+          Format: cjs,
+          OutExtension: [".js=.cjs"],
+          Target: es2022,
+          Minify: true,
+        }
+  NotifyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: lambda.notify
+      DeadLetterQueue: { Type: SQS, TargetArn: !GetAtt FailureQueue.Arn }
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt Table.Arn
+      Events:
+        Recorded:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref Bus
+            Pattern:
+              { source: [rehan.educore], detail-type: [EnrollmentRecorded] }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        {
+          EntryPoints: [src/lambda.ts],
+          Format: cjs,
+          OutExtension: [".js=.cjs"],
+          Target: es2022,
+          Minify: true,
+        }
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/demo/enrollments"
+  FailedDeliveries:
+    Value: !Ref FailureQueue
