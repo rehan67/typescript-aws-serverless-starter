@@ -42,7 +42,7 @@ test("atomic local commit creates one record and outbox event", async () => {
   assert.equal(store.mailbox.size, 1);
   assert.equal(store.deliveries, 2);
 });
-test("stream retries only failed sequence numbers", async () => {
+test("stream reports failed sequence numbers for Lambda checkpointing", async () => {
   const store = new MemoryStore();
   const handlers = makeHandlers(
     store,

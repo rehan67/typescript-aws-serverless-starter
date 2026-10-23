@@ -29,6 +29,8 @@ flowchart LR
 
 An enrolment item is also the stream's durable publication source. Duplicate requests use a stable event identity and a conditional put. The stream publisher reports failed sequence numbers and checks EventBridge FailedEntryCount, so rejected publication is retried. The consumer's conditional mailbox insert is the business effect and idempotency record. This does not prove exactly-once external email delivery.
 
+Partial batch reporting does not mean only the listed failed records are replayed: Lambda checkpoints at the lowest failed sequence number and can replay subsequent successful records too. The consumer must remain idempotent. See [AWS checkpoint semantics](https://docs.aws.amazon.com/lambda/latest/dg/services-ddb-batchfailurereporting.html).
+
 ## Optional deployment — creates billable resources
 
 Install AWS SAM CLI and configure an authorised AWS profile. Review template.yaml, permissions, region, quotas and costs first.
@@ -42,6 +44,8 @@ sam delete --stack-name YOUR_STACK_NAME
 ```
 
 The API requires AWS IAM-signed requests. DynamoDB, Lambda, API Gateway, EventBridge, SQS and logging can incur charges; no zero-cost claim is made. Stream failures go to an encrypted SQS queue; consumer asynchronous failures use the same queue. Monitor and reconcile it. Review EventBridge target-delivery failures separately. sam delete removes the stack and its demonstration table; export any data you need first. Nothing deploys automatically in this repository.
+
+For DynamoDB stream failures, the SQS destination contains invocation/stream metadata, not a durable copy of the original records. Stream retention can expire before an operator replays them. Recover enrolment payloads from the retained `ENROLLMENT#...` table items, reconcile against notification items, and republish deliberately; this repository does not implement that reconciliation tool. Do not treat the failure queue as a complete event archive. See [AWS failure-destination behavior](https://docs.aws.amazon.com/lambda/latest/dg/services-dynamodb-errors.html). Local tests and a loadable Lambda bundle are verified; a real AWS deployment has not been performed.
 
 ## Limitations / security
 
